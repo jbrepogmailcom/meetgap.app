@@ -1,155 +1,87 @@
-# Timeful Deployment Guide
+# Meetgap deployment
 
-Production deployment using Docker Compose behind a Caddy reverse proxy.
+Meetgap runs as three Docker Compose services: the Vue frontend build, the Go
+server, and MongoDB. Production and staging use separate Compose project names,
+ports, databases, and volumes.
 
-## Prerequisites
+## Local development
 
-- Docker and Docker Compose
-- Caddy on the host (for reverse proxy + automatic HTTPS, although you can use any reverse proxy)
-- Domain with DNS pointing to your server
-
-## Quick Start
+The repository includes an ignored `server/.env` with safe local-only secrets.
+Calendar sign-in remains disabled until OAuth client IDs are added.
 
 ```bash
-# 1. Clone the repository
-git clone https://github.com/schej-it/timeful.app
-cd timeful.app
-
-# 2. Create server environment file
-cp server/.env.template server/.env
-# Edit server/.env with your values (see Configuration below)
-
-# 3. Build and start services
 docker compose up -d --build
-
-# 4. Configure Caddy
-sudo cp Caddyfile.example /etc/caddy/Caddyfile
-# Edit /etc/caddy/Caddyfile with your domain
-sudo systemctl reload caddy
-```
-
-## Services
-
-| Service    | Description                             | Port           |
-| ---------- | --------------------------------------- | -------------- |
-| `mongo`    | MongoDB 7 database                      | Internal only  |
-| `frontend` | Vue.js build (outputs to shared volume) | N/A            |
-| `server`   | Go backend                              | 127.0.0.1:3002 |
-
-## Caddy
-
-The example Caddyfile proxies all traffic to the Go backend on port 3002. Caddy handles:
-
-- Automatic HTTPS certificates
-- HTTP → HTTPS redirect
-- www → non-www redirect
-- Compression (gzip/zstd)
-- Security headers
-
-Edit `/etc/caddy/Caddyfile` with your domain before reloading.
-
-## Commands
-
-```bash
-docker compose up -d              # Start services
-docker compose logs -f            # View logs
-docker compose logs -f server     # View specific service logs
-docker compose up -d --build      # Rebuild after code changes
-docker compose down               # Stop services
-docker compose down -v            # Stop and remove volumes (deletes data!)
-```
-
-## Data & Backup
-
-Data is persisted in Docker volumes: `mongo_data`, `frontend_dist`, `server_logs`.
-
-```bash
-# Backup MongoDB
-docker compose exec mongo mongodump --db=schej-it --archive=/data/db/backup.archive
-docker compose cp mongo:/data/db/backup.archive ./backup.archive
-
-# Restore MongoDB
-docker compose cp ./backup.archive mongo:/data/db/backup.archive
-docker compose exec mongo mongorestore --drop --db=schej-it --archive=/data/db/backup.archive
-```
-
-## Troubleshooting
-
-```bash
-# Container won't start
-docker compose logs server
-ls -la server/.env
-
-# MongoDB connection issues
 docker compose ps
-docker compose exec mongo mongosh --eval "db.adminCommand('ping')"
-
-# Frontend not loading
-docker compose logs frontend
-docker compose exec server ls -la /app/frontend/dist
+curl --fail http://localhost:3002/api/health
 ```
 
----
+Open <http://localhost:3002>. Stop the stack with `docker compose down`. Do not
+use `docker compose down -v` unless the local database may be deleted.
 
-## Configuration
+## Staging architecture
 
-### Required Environment Variables
+- Git branch: `staging`
+- Public URL: `https://staging.meetgap.app`
+- Host port: `127.0.0.1:3003`
+- Compose project: `meetgap-staging`
+- Deployment: automatic GitHub Actions run after each push to `staging`
+- Releases: stored under `<deploy path>/releases/<git SHA>`
 
-Create `server/.env` from the template (`server/.env.template`).
+The deployment workflow is `.github/workflows/deploy-staging.yml`. It uploads a
+release archive, builds it on the server with Docker Compose, and verifies
+`/api/health`. GitHub shows the public staging URL on each successful deployment.
 
-#### Required
+## One-time server setup
 
-| Variable         | Description                                                                 |
-| ---------------- | --------------------------------------------------------------------------- |
-| `CLIENT_ID`      | Google OAuth client ID                                                      |
-| `CLIENT_SECRET`  | Google OAuth client secret                                                  |
-| `ENCRYPTION_KEY` | Key for encrypting sensitive data (generate with `openssl rand -base64 32`) |
-| `SESSION_SECRET` | Session cookie encryption key (generate with `openssl rand -base64 32`)     |
+The SSH user needs Docker access and write permission to a dedicated absolute
+directory ending in `/meetgap-staging`, for example:
 
-#### Optional — Payments
+```bash
+sudo mkdir -p /opt/meetgap-staging
+sudo chown "$USER":"$USER" /opt/meetgap-staging
+docker version
+docker compose version
+```
 
-| Variable                | Description                        |
-| ----------------------- | ---------------------------------- |
-| `STRIPE_API_KEY`        | Stripe API key                     |
-| `STRIPE_WEBHOOK_SECRET` | Stripe webhook signing secret      |
-| `STRIPE_*_PRICE_ID`     | Stripe price IDs for various plans |
+Add the `staging.meetgap.app` DNS record pointing to the server, then add the
+staging block from `Caddyfile.example` to Caddy and reload it. Caddy terminates
+HTTPS and proxies only to the loopback-bound port 3003.
 
-#### Optional — Additional Calendars
+## GitHub staging secrets
 
-| Variable                  | Description                             |
-| ------------------------- | --------------------------------------- |
-| `MICROSOFT_CLIENT_ID`     | Microsoft OAuth client ID (for Outlook) |
-| `MICROSOFT_CLIENT_SECRET` | Microsoft OAuth client secret           |
+Create a GitHub environment named `staging`, then add these environment secrets:
 
-#### Optional — CORS
+| Secret | Value |
+| --- | --- |
+| `STAGING_SSH_HOST` | Server hostname or IP |
+| `STAGING_SSH_USER` | Deployment SSH user |
+| `STAGING_SSH_PRIVATE_KEY` | Private key used only for deployment |
+| `STAGING_SSH_KNOWN_HOSTS` | Pinned server host-key line from `ssh-keyscan` |
+| `STAGING_DEPLOY_PATH` | Absolute path ending in `/meetgap-staging` |
+| `STAGING_ENV_FILE` | Complete multiline server environment shown below |
 
-| Variable       | Description                                                                                                          |
-| -------------- | -------------------------------------------------------------------------------------------------------------------- |
-| `CORS_ORIGINS` | Comma-separated allowed origins (default: production domains). For local development, set to `http://localhost:8080` |
+Minimum `STAGING_ENV_FILE`:
 
-#### Optional — Other Services
+```dotenv
+CLIENT_ID=
+CLIENT_SECRET=
+MICROSOFT_CLIENT_ID=
+MICROSOFT_CLIENT_SECRET=
+ENCRYPTION_KEY=replace-with-exactly-16-24-or-32-characters
+SESSION_SECRET=replace-with-at-least-32-random-characters
+CORS_ORIGINS=https://staging.meetgap.app
+BASE_URL=https://staging.meetgap.app
+LISTMONK_ENABLED=false
+```
 
-| Variable                                     | Description                                  |
-| -------------------------------------------- | -------------------------------------------- |
-| `ANALYTICS_USERNAME` / `ANALYTICS_PASSWORD`  | Basic auth for /api/analytics routes         |
-| `SERVICE_ACCOUNT_KEY_PATH`                   | Google Cloud service account for Cloud Tasks |
-| `SLACK_*_WEBHOOK_URL`                        | Slack webhooks for notifications             |
-| `GMAIL_APP_PASSWORD` / `SCHEJ_EMAIL_ADDRESS` | Gmail SMTP for sending emails                |
-| `LISTMONK_*`                                 | Listmonk email service configuration         |
-| `DISCORD_BOT_TOKEN` / `GUILD_ID`             | Discord bot integration                      |
+Generate secrets with `openssl rand -hex 16` for `ENCRYPTION_KEY` and
+`openssl rand -hex 32` for `SESSION_SECRET`. OAuth values can remain empty while
+testing the core scheduling UI, but calendar integrations require provider-side
+callback URLs for the staging domain.
 
-See `server/.env.template` for the complete list.
+## Production
 
-### Google OAuth Setup
-
-1. Go to [Google Cloud Console](https://console.cloud.google.com/)
-2. Create a new project or select existing
-3. Enable the following APIs:
-   - Google Calendar API
-   - People API (Contacts)
-   - Admin SDK API (Directory)
-4. Create OAuth 2.0 credentials (Web application type)
-5. Add authorized redirect URIs:
-   - `https://yourdomain.com/api/auth/callback`
-   - `http://localhost:3002/api/auth/callback` (for development)
-6. Copy the Client ID and Client Secret to your `.env`
+Production uses the same `compose.yaml` with its own environment and defaults to
+port 3002 and project name `meetgap`. It is intentionally not deployed on every
+push. A production workflow should be enabled only after the staging setup and
+OAuth callbacks have been verified.

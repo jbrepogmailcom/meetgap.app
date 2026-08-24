@@ -1,0 +1,102 @@
+name: Deploy staging
+
+on:
+  push:
+    branches: [staging]
+  workflow_dispatch:
+
+concurrency:
+  group: meetgap-staging
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment:
+      name: staging
+      url: https://staging.meetgap.app
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Configure SSH
+        env:
+          SSH_PRIVATE_KEY: ${{ secrets.STAGING_SSH_PRIVATE_KEY }}
+          SSH_KNOWN_HOSTS: ${{ secrets.STAGING_SSH_KNOWN_HOSTS }}
+        run: |
+          set -euo pipefail
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$SSH_PRIVATE_KEY" > ~/.ssh/meetgap_staging
+          chmod 600 ~/.ssh/meetgap_staging
+          printf '%s\n' "$SSH_KNOWN_HOSTS" > ~/.ssh/known_hosts
+          chmod 600 ~/.ssh/known_hosts
+
+      - name: Package release and environment
+        env:
+          STAGING_ENV_FILE: ${{ secrets.STAGING_ENV_FILE }}
+        run: |
+          set -euo pipefail
+          tar --exclude=.git --exclude=server/.env \
+            --exclude=meetgap-release.tar.gz --exclude=meetgap-server.env \
+            -czf meetgap-release.tar.gz .
+          printf '%s\n' "$STAGING_ENV_FILE" > meetgap-server.env
+          chmod 600 meetgap-server.env
+
+      - name: Upload release
+        env:
+          SSH_HOST: ${{ secrets.STAGING_SSH_HOST }}
+          SSH_USER: ${{ secrets.STAGING_SSH_USER }}
+        run: |
+          set -euo pipefail
+          scp -i ~/.ssh/meetgap_staging \
+            meetgap-release.tar.gz meetgap-server.env \
+            "${SSH_USER}@${SSH_HOST}:/tmp/"
+
+      - name: Start staging release
+        env:
+          SSH_HOST: ${{ secrets.STAGING_SSH_HOST }}
+          SSH_USER: ${{ secrets.STAGING_SSH_USER }}
+          DEPLOY_PATH: ${{ secrets.STAGING_DEPLOY_PATH }}
+          RELEASE_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          ssh -i ~/.ssh/meetgap_staging "${SSH_USER}@${SSH_HOST}" \
+            "DEPLOY_PATH='$DEPLOY_PATH' RELEASE_SHA='$RELEASE_SHA' bash -s" <<'REMOTE'
+          set -euo pipefail
+          case "$DEPLOY_PATH" in
+            /*/meetgap-staging) ;;
+            *) echo "STAGING_DEPLOY_PATH must be an absolute path ending in /meetgap-staging" >&2; exit 1 ;;
+          esac
+
+          release_dir="$DEPLOY_PATH/releases/$RELEASE_SHA"
+          mkdir -p "$release_dir" "$DEPLOY_PATH/shared"
+          tar -xzf /tmp/meetgap-release.tar.gz -C "$release_dir"
+          install -m 600 /tmp/meetgap-server.env "$DEPLOY_PATH/shared/server.env"
+          ln -sfn "$release_dir" "$DEPLOY_PATH/current"
+
+          cd "$DEPLOY_PATH/current"
+          COMPOSE_PROJECT_NAME=meetgap-staging HOST_PORT=3003 \
+            SERVER_ENV_FILE="$DEPLOY_PATH/shared/server.env" \
+            docker compose --env-file "$DEPLOY_PATH/shared/server.env" up -d --build --remove-orphans
+
+          rm -f /tmp/meetgap-release.tar.gz /tmp/meetgap-server.env
+          find "$DEPLOY_PATH/releases" -mindepth 1 -maxdepth 1 -type d \
+            ! -name "$RELEASE_SHA" -mtime +7 -exec rm -rf -- {} +
+          REMOTE
+
+      - name: Verify staging health
+        run: |
+          set -euo pipefail
+          for attempt in $(seq 1 24); do
+            if curl --fail --silent --show-error \
+              --max-time 10 https://staging.meetgap.app/api/health > /dev/null; then
+              exit 0
+            fi
+            sleep 5
+          done
+          echo "Staging health check failed" >&2
+          exit 1

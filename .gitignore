@@ -1,4 +1,5 @@
 *.exe
+server/.env
 server/logs.log
 .DS_Store
 server/server

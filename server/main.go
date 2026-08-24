@@ -127,6 +127,9 @@ func main() {
 
 	// Init routes
 	apiRouter := router.Group("/api")
+	apiRouter.GET("/health", func(c *gin.Context) {
+		c.JSON(http.StatusOK, gin.H{"status": "ok"})
+	})
 	routes.InitAuth(apiRouter)
 	routes.InitUser(apiRouter)
 	routes.InitUsers(apiRouter)
@@ -173,11 +176,14 @@ func main() {
 	// Init swagger documentation
 	router.GET("/swagger/*any", ginSwagger.WrapHandler(swaggerfiles.Handler))
 
-	// Run server
-	if os.Getenv("NODE_ENV") == "staging" {
-		router.Run(":3003")
-	} else {
-		router.Run(":3002")
+	// Run server. The host-facing port is configured by Docker Compose;
+	// keeping one container port makes local, staging, and production identical.
+	port := os.Getenv("PORT")
+	if port == "" {
+		port = "3002"
+	}
+	if err := router.Run(":" + port); err != nil {
+		logger.StdErr.Panicln(err)
 	}
 }
 

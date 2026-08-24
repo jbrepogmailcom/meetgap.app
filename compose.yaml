@@ -1,4 +1,4 @@
-name: timeful
+name: ${COMPOSE_PROJECT_NAME:-meetgap}
 
 services:
   mongo:
@@ -35,12 +35,13 @@ services:
       context: ./server
     restart: unless-stopped
     ports:
-      - "3002:3002"
+      - "127.0.0.1:${HOST_PORT:-3002}:3002"
     env_file:
-      - ./server/.env
+      - ${SERVER_ENV_FILE:-./server/.env}
     environment:
       MONGODB_URI: mongodb://mongo:27017
       GIN_MODE: release
+      PORT: "3002"
     volumes:
       - frontend_dist:/app/frontend/dist:ro
       - server_logs:/app/logs

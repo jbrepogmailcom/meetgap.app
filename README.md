@@ -48,4 +48,5 @@ Read these docs to design your own browser plugins to get + set availability on 
 
 ## Self-hosting
 
-See the [Deployment Guide](./DEPLOYMENT.md) for Docker Compose and NixOS setup instructions.
+See the [Deployment Guide](./DEPLOYMENT.md) for local Docker setup and the
+automatic `staging.meetgap.app` deployment workflow.
